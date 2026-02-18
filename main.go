@@ -2,9 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -16,7 +15,22 @@ type Item struct {
 	Price int    `json:"price"`
 }
 
-// post - /add
+func (i Item) Validate() error {
+	if i.Name == "" || i.Brand == "" || i.Price <= 0 {
+		return errors.New("invalid item data")
+	}
+	return nil
+}
+
+type Storage interface {
+	Add(item Item) (Item, error)
+	List() ([]Item, error)
+	Get(id int) (Item, error)
+	Delete(id int) error
+}
+
+var store Storage = NewFileStorage()
+
 func addItem(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -24,57 +38,42 @@ func addItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var item Item
-	err := json.NewDecoder(r.Body).Decode(&item)
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
 
-	if item.Name == "" || item.Brand == "" || item.Price <= 0 {
+	if err := item.Validate(); err != nil {
 		http.Error(w, `{"error":"invalid item data"}`, http.StatusBadRequest)
 		return
 	}
 
-	files, _ := os.ReadDir("items")
-	item.ID = len(files) + 1
-
-	filePath := fmt.Sprintf("items/item%d.json", item.ID)
-	file, err := os.Create(filePath)
+	item, err := store.Add(item)
 	if err != nil {
-		http.Error(w, `{"error":"cannot create file"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error":"cannot create item"}`, http.StatusInternalServerError)
 		return
 	}
-	defer file.Close()
-
-	json.NewEncoder(file).Encode(item)
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(item)
 }
 
-// get - /list
 func listItems(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	files, _ := os.ReadDir("items")
-	items := []Item{}
-
-	for _, f := range files {
-		file, _ := os.Open("items/" + f.Name())
-		var item Item
-		json.NewDecoder(file).Decode(&item)
-		file.Close()
-		items = append(items, item)
+	items, err := store.List()
+	if err != nil {
+		http.Error(w, `{"error":"cannot list items"}`, http.StatusInternalServerError)
+		return
 	}
 
 	json.NewEncoder(w).Encode(items)
 }
 
-// get- /item/{id}
 func getItem(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -88,20 +87,15 @@ func getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filePath := fmt.Sprintf("items/item%d.json", id)
-	file, err := os.Open(filePath)
+	item, err := store.Get(id)
 	if err != nil {
 		http.Error(w, `{"error":"item not found"}`, http.StatusNotFound)
 		return
 	}
-	defer file.Close()
 
-	var item Item
-	json.NewDecoder(file).Decode(&item)
 	json.NewEncoder(w).Encode(item)
 }
 
-// delete - /delete/{id}
 func deleteItem(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -115,9 +109,7 @@ func deleteItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filePath := fmt.Sprintf("items/item%d.json", id)
-	err = os.Remove(filePath)
-	if err != nil {
+	if err := store.Delete(id); err != nil {
 		http.Error(w, `{"error":"item not found"}`, http.StatusNotFound)
 		return
 	}
